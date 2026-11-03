@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>lms-tokps</AssemblyName>
+    <RootNamespace>LmsTokps</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AssemblyTitle>LM Studio tok/s widget</AssemblyTitle>
+    <Product>lms-tokps</Product>
+    <Description>Windows 11 systray widget that tails LM Studio server logs and shows live tokens per second.</Description>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+
+</Project>
