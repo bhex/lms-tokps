@@ -10,6 +10,8 @@ public sealed class Settings
     public double WindowY { get; set; } = double.NaN;
     public bool Paused { get; set; }
     public bool ShowPrompt { get; set; } = true;
+    /// <summary>Auto-sleep after this many idle minutes (0 = never).</summary>
+    public int AutoSleepMinutes { get; set; } = 5;
 
     public static string Dir => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "lms-tokps");

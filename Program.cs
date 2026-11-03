@@ -1,5 +1,3 @@
-using System.Timers;
-
 namespace LmsTokps;
 
 internal static class Program
@@ -19,6 +17,7 @@ internal static class Program
 
         // A --root on the command line always wins over the saved setting.
         string? explicitRoot = null;
+        int? sleepOverride = null;
         for (int i = 0; i < args.Length; i++)
         {
             string a = args[i];
@@ -26,6 +25,9 @@ internal static class Program
                 explicitRoot = a["--root=".Length..];
             else if ((a == "--root" || a == "-r") && i + 1 < args.Length)
                 explicitRoot = args[i + 1];
+            else if (a.StartsWith("--sleep=", StringComparison.OrdinalIgnoreCase) &&
+                     int.TryParse(a["--sleep=".Length..], out int m))
+                sleepOverride = Math.Max(0, m);
         }
 
         var settings = Settings.Load();
@@ -33,27 +35,21 @@ internal static class Program
             settings.Root = explicitRoot;
         else if (string.IsNullOrWhiteSpace(settings.Root))
             settings.Root = DefaultRoot;
+        if (sleepOverride is int sm)
+            settings.AutoSleepMinutes = sm;
 
         var form = new WidgetForm(settings);
         var watcher = new LogWatcher(settings.Root);
 
-        var timer = new System.Timers.Timer(1000) { AutoReset = true };
-        timer.Elapsed += (s, e) =>
-        {
-            LogSample? sample = null;
-            try { sample = watcher.Sample(); }
-            catch { sample = null; }
-            form.ApplySample(sample);
-        };
+        // Event-driven: the OS notifies us when a log changes (reads are
+        // throttled to ~3/s), with a slow 30 s fallback poll in case events
+        // are dropped. No steady-state polling while things are quiet.
+        watcher.SampleReady += form.ApplySample;
 
-        form.FormClosed += (s, e) =>
-        {
-            timer.Stop();
-            timer.Dispose();
-        };
+        form.FormClosed += (s, e) => watcher.Dispose();
 
-        timer.Start();
-        form.Show();
+        form.Show();          // create the handle first, so BeginInvoke works
+        watcher.Start();      // initial sample + start watching
         Application.Run(form);
     }
 }

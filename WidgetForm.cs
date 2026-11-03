@@ -38,17 +38,24 @@ public sealed class WidgetForm : Form
     private NotifyIcon _tray;
     private readonly Icon _iconLive;
     private readonly Icon _iconIdle;
+    private readonly Icon _iconSleep;
     private readonly ContextMenuStrip _menu;
-    private ToolStripMenuItem _toggleItem;
-    private ToolStripMenuItem _pauseItem;
+    private readonly ToolStripMenuItem _toggleItem;
+    private readonly ToolStripMenuItem _pauseItem;
+    private readonly List<ToolStripMenuItem> _autoSleepItems = new();
+
+    /// <summary>When the newest log line was seen (drives auto-sleep).</summary>
+    private DateTime _lastActivity = DateTime.Now;
+    private bool _autoSlept;
 
 
 
     public WidgetForm(Settings settings)
     {
         _settings = settings;
-        _iconLive = TrayIcon(Live);
-        _iconIdle = TrayIcon(Idle);
+        _iconLive = WaveIcon(Live);
+        _iconIdle = WaveIcon(Idle);
+        _iconSleep = SleepIcon();
 
         // ---- form chrome ------------------------------------------------
         // The card background is fully transparent (layered window); only the
@@ -71,9 +78,24 @@ public sealed class WidgetForm : Form
         var dock = new ToolStripMenuItem("Dock bottom-right", null, (s, e) => DockBottomRight());
         var open = new ToolStripMenuItem("Open logs folder", null, (s, e) => OpenLogsFolder());
         var quit = new ToolStripMenuItem("Quit", null, (s, e) => Quit());
+
+        var autoSleep = new ToolStripMenuItem("Auto-sleep");
+        foreach ((string label, int minutes) in new[]
+        {
+            ("Off", 0), ("After 1 min", 1), ("After 5 min", 5),
+            ("After 15 min", 15), ("After 1 hour", 60),
+        })
+        {
+            var mi = new ToolStripMenuItem(label) { Tag = minutes };
+            mi.Click += (s, e) => SetAutoSleep(minutes);
+            mi.Checked = _settings.AutoSleepMinutes == minutes;
+            autoSleep.DropDownItems.Add(mi);
+            _autoSleepItems.Add(mi);
+        }
+
         _menu.Items.AddRange(new ToolStripItem[]
         {
-            _toggleItem, _pauseItem, dock, new ToolStripSeparator(), open, quit
+            _toggleItem, _pauseItem, autoSleep, dock, new ToolStripSeparator(), open, quit
         });
 
         _tray = new NotifyIcon
@@ -127,11 +149,15 @@ public sealed class WidgetForm : Form
     // ---- tray icon ----------------------------------------------------
     // Bold glyph that fills most of the canvas, bundled at 16/24/32/48 px
     // so the shell uses a native size instead of downscaling a blurry one.
-    private static Icon TrayIcon(Color dot)
+    private static Icon TrayIcon(Action<Graphics, int> draw)
     {
         int[] sizes = { 16, 24, 32, 48 };
         var images = new byte[sizes.Length][];
-        for (int i = 0; i < sizes.Length; i++) images[i] = TrayImage(sizes[i], dot);
+        for (int i = 0; i < sizes.Length; i++)
+        {
+            int s = sizes[i];
+            images[i] = TrayImage(s, g => draw(g, s));
+        }
 
         using var ms = new MemoryStream();
         using (var bw = new BinaryWriter(ms))
@@ -159,25 +185,62 @@ public sealed class WidgetForm : Form
         return new Icon(iconStream);
     }
 
-    private static byte[] TrayImage(int s, Color dot)
+    /// <summary>Dot + bold "waveform" (live / idle, coloured by the dot).</summary>
+    private static Icon WaveIcon(Color dot) => TrayIcon((g, s) =>
+    {
+        float m = s * 0.08f;                      // dot nearly fills the canvas
+        using (var br = new SolidBrush(dot))
+            g.FillEllipse(br, m, m, s - 2 * m, s - 2 * m);
+        using (var pen = new Pen(Color.FromArgb(225, 242, 245, 250),
+                                 Math.Max(1.6f, s * 0.10f)))
+            g.DrawLines(pen, new[]
+            {
+                new PointF(s * 0.28f, s * 0.66f),
+                new PointF(s * 0.41f, s * 0.41f),
+                new PointF(s * 0.53f, s * 0.72f),
+                new PointF(s * 0.72f, s * 0.38f),
+            });
+    });
+
+    /// <summary>"Z z" — the widget is asleep.</summary>
+    private static Icon SleepIcon() => TrayIcon((g, s) =>
+    {
+        Color z = Color.FromArgb(235, 148, 158, 174);
+        using var pen = new Pen(z, Math.Max(1.6f, s * 0.11f))
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+            LineJoin = LineJoin.Round,
+        };
+        g.DrawLines(pen, new[]
+        {
+            new PointF(s * 0.20f, s * 0.30f),
+            new PointF(s * 0.62f, s * 0.30f),
+            new PointF(s * 0.30f, s * 0.62f),
+            new PointF(s * 0.72f, s * 0.62f),
+        });
+        using var pen2 = new Pen(z, Math.Max(1.1f, s * 0.08f))
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+        };
+        g.DrawLines(pen2, new[]
+        {
+            new PointF(s * 0.60f, s * 0.44f),
+            new PointF(s * 0.82f, s * 0.44f),
+            new PointF(s * 0.64f, s * 0.68f),
+            new PointF(s * 0.86f, s * 0.68f),
+        });
+    });
+
+    private static byte[] TrayImage(int s, Action<Graphics> draw)
     {
         using var bmp = new Bitmap(s, s);
         using (var g = Graphics.FromImage(bmp))
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.Clear(Color.Transparent);
-            float m = s * 0.08f;                  // dot nearly fills the canvas
-            using (var br = new SolidBrush(dot))
-                g.FillEllipse(br, m, m, s - 2 * m, s - 2 * m);
-            using (var pen = new Pen(Color.FromArgb(225, 242, 245, 250),
-                                     Math.Max(1.6f, s * 0.10f)))
-                g.DrawLines(pen, new[]           // bold "waveform" = throughput
-                {
-                    new PointF(s * 0.28f, s * 0.66f),
-                    new PointF(s * 0.41f, s * 0.41f),
-                    new PointF(s * 0.53f, s * 0.72f),
-                    new PointF(s * 0.72f, s * 0.38f),
-                });
+            draw(g);
         }
 
         // Encode as a 32-bpp bottom-up DIB (BITMAPINFOHEADER + pixels + zero AND mask).
@@ -262,6 +325,25 @@ public sealed class WidgetForm : Form
             return;
         }
 
+        // ---- auto-sleep: hide when the logs go silent, wake on activity ----
+        if (sample?.Timestamp is DateTime t && t > _lastActivity) _lastActivity = t;
+        if (_settings.AutoSleepMinutes > 0)
+        {
+            bool idleLong = (DateTime.Now - _lastActivity).TotalMinutes >= _settings.AutoSleepMinutes;
+            if (idleLong && Visible)
+            {
+                _autoSlept = true;
+                SetVisible(false);
+                _tray.Icon = _iconSleep;
+                _tray.Text = "LM Studio  sleeping — wakes on activity";
+            }
+            else if (_autoSlept && !idleLong)
+            {
+                _autoSlept = false;
+                SetVisible(true);
+            }
+        }
+
         if (sample is null || (sample.Throughput is null && sample.PromptTps is null))
         {
             PushSpark(null);
@@ -272,8 +354,10 @@ public sealed class WidgetForm : Form
             _statusText = "IDLE";
             _statusColor = Muted;
             _dotColor = Idle;
-            _tray.Icon = _iconIdle;
-            _tray.Text = "LM Studio  —  waiting for activity";
+            _tray.Icon = _autoSlept ? _iconSleep : _iconIdle;
+            _tray.Text = _autoSlept
+                ? "LM Studio  sleeping — wakes on activity"
+                : "LM Studio  —  waiting for activity";
             Present();
             return;
         }
@@ -319,7 +403,7 @@ public sealed class WidgetForm : Form
             _statusText = "IDLE";
             _statusColor = Muted;
             _dotColor = Idle;
-            _tray.Icon = _iconIdle;
+            _tray.Icon = _autoSlept ? _iconSleep : _iconIdle;
             _tray.Text = $"LM Studio  idle  (last {FormatTps(headline)} tok/s)";
             _subText = timeText.Length > 0 ? $"last {timeText}" : string.Empty;
         }
@@ -568,6 +652,7 @@ public sealed class WidgetForm : Form
     {
         if (show)
         {
+            _autoSlept = false;   // user (or the wake logic) brought it back
             Show();
             WindowState = FormWindowState.Normal;
             TopMost = true;
@@ -587,6 +672,18 @@ public sealed class WidgetForm : Form
         _pauseItem.Text = _settings.Paused ? "Resume updates" : "Pause updates";
         _settings.Save();
         Render(null);
+    }
+
+    private void SetAutoSleep(int minutes)
+    {
+        _settings.AutoSleepMinutes = minutes;
+        _settings.Save();
+        foreach (var mi in _autoSleepItems) mi.Checked = Equals(mi.Tag, minutes);
+        if (_autoSlept && minutes == 0)
+        {
+            _autoSlept = false;
+            SetVisible(true);
+        }
     }
 
     private void OpenLogsFolder()

@@ -43,6 +43,9 @@ When it starts:
 
 - **Show / Hide widget**
 - **Pause / Resume updates**
+- **Auto-sleep** (Off / 1 min / 5 min / 15 min / 1 hour) — when the logs have
+  been silent for that long, the widget hides itself (tray icon becomes
+  "Z z"); any new log activity wakes it instantly
 - **Dock bottom-right** — snaps the widget back above the taskbar
 - **Open logs folder**
 - **Quit**
@@ -56,16 +59,24 @@ Hiding the widget (rather than Quit) keeps it running in the tray.
 - Override the folder (command line wins over the saved setting):
 
   ```
-  lms-tokps.exe --root="D:\path\to\server-logs"
+  lms-tokps.exe --root="D:\path\to\server-logs" --sleep=15
   ```
+
+  `--sleep=N` sets the auto-sleep idle minutes (0 = off) the same way as the
+  tray menu.
 
 - Window position, pause state and folder are remembered in
   `%AppData%\lms-tokps\settings.json` — delete that file to reset.
 
 ## How it finds the number
 
-Every second it picks the newest `*.log` file under the folder, reads the last
-512 KB, and parses the most recent live progress line:
+The widget watches the folder with a `FileSystemWatcher` — when a log file
+changes it picks the newest `*.log`, reads the last 512 KB, and parses the
+most recent live progress line (reads are throttled to ~3/s while the server
+is chattering, so a hot generation costs almost nothing). A slow 30 s fallback
+poll covers any dropped watcher events, and auto-sleep keys off the last log
+activity. Nothing else on disk is read — the folder is only ever read, never
+written.
 
 ```
 n_gen = 900, tg = 75.83 t/s, tg_3s = 92.40 t/s

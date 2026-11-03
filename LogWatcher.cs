@@ -47,6 +47,99 @@ public sealed class LogWatcher
     public LogWatcher(string root) { _root = root; }
     public string Root => _root;
 
+    // ---- event-driven updates ------------------------------------------
+    // The OS tells us when a log changes (FileSystemWatcher); reads are
+    // throttled to at most one per MinSampleIntervalMs, and a slow fallback
+    // poll keeps things honest in case events are dropped.
+    private const int MinSampleIntervalMs = 300;
+    private const int FallbackIntervalMs = 30_000;
+
+    private readonly object _gate = new();
+    private bool _samplePending;
+    private DateTime _lastSampleAt = DateTime.MinValue;
+
+    private FileSystemWatcher? _fsWatcher;
+    private System.Threading.Timer? _sampleTimer;
+    private System.Threading.Timer? _fallbackTimer;
+    private bool _started;
+
+    /// <summary>Raised on a background thread; marshal to the UI thread.</summary>
+    public event Action<LogSample?>? SampleReady;
+
+    public void Start()
+    {
+        if (_started) return;
+        _started = true;
+
+        _sampleTimer = new System.Threading.Timer(_ =>
+        {
+            lock (_gate) _samplePending = false;
+            RaiseSample();
+        }, null, System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
+
+        TryCreateFsWatcher();
+
+        _fallbackTimer = new System.Threading.Timer(_ =>
+        {
+            if (_fsWatcher is null) TryCreateFsWatcher();  // the root may have appeared
+            RaiseSample();                                  // cheap: one 512 KB read / 30 s
+        }, null, FallbackIntervalMs, FallbackIntervalMs);
+
+        RaiseSample();  // initial paint
+    }
+
+    private void RaiseSample()
+    {
+        LogSample? sample;
+        try { sample = Sample(); } catch { sample = null; }
+        SampleReady?.Invoke(sample);
+    }
+
+    private void TryCreateFsWatcher()
+    {
+        if (_fsWatcher is not null) return;
+        if (string.IsNullOrWhiteSpace(_root) || !Directory.Exists(_root)) return;
+        try
+        {
+            _fsWatcher = new FileSystemWatcher(_root)
+            {
+                Filter = "*.log",
+                IncludeSubdirectories = true,
+                EnableRaisingEvents = true,
+            };
+            _fsWatcher.NotifyFilter = System.IO.NotifyFilters.LastWrite
+                | System.IO.NotifyFilters.Size
+                | System.IO.NotifyFilters.FileName;
+            _fsWatcher.Changed += OnFsEvent;
+            _fsWatcher.Created += OnFsEvent;
+        }
+        catch { _fsWatcher = null; }   // fallback poll still covers us
+    }
+
+    private void OnFsEvent(object sender, FileSystemEventArgs e) => ScheduleSample();
+
+    private void ScheduleSample()
+    {
+        if (_sampleTimer is null) return;
+        int delayMs;
+        lock (_gate)
+        {
+            if (_samplePending) return;          // one read is already queued
+            double since = (DateTime.Now - _lastSampleAt).TotalMilliseconds;
+            delayMs = (int)Math.Max(0, MinSampleIntervalMs - since);
+            _samplePending = true;
+            _lastSampleAt = DateTime.Now;
+        }
+        _sampleTimer.Change(delayMs, System.Threading.Timeout.Infinite);
+    }
+
+    public void Dispose()
+    {
+        _fsWatcher?.Dispose();
+        _sampleTimer?.Dispose();
+        _fallbackTimer?.Dispose();
+    }
+
     public LogSample? Sample()
     {
         string? file = NewestLog();
