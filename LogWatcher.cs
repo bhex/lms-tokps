@@ -117,9 +117,13 @@ public sealed class LogWatcher
         };
     }
 
+    // Log timestamps are written in the machine's local time — parse them as
+    // local (AssumeLocal) so display and the LIVE-window check stay correct.
+    // (Parsing as None yields Kind.Utc, and a later ToLocalTime() would then
+    // wrongly add the UTC offset — e.g. 18:56 shown as 20:56.)
     private DateTime? Ts(string line)
         => TsRegex.Match(line) is { Success: true } m &&
-           DateTime.TryParse(m.Groups[1].Value, Inv, DateTimeStyles.None, out DateTime t)
+           DateTime.TryParse(m.Groups[1].Value, Inv, DateTimeStyles.AssumeLocal, out DateTime t)
             ? t : null;
 
     private static DateTime? LatestOf(DateTime? a, DateTime? b)
